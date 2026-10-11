@@ -7,12 +7,19 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "server": "node server/index.js",
+    "dev:all": "concurrently \"npm:server\" \"npm:dev\""
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "express": "^4.21.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",
@@ -23,6 +30,7 @@
     "vitest": "^2.1.5",
     "jsdom": "^25.0.1",
     "@testing-library/react": "^16.1.0",
-    "@testing-library/user-event": "^14.5.2"
+    "@testing-library/user-event": "^14.5.2",
+    "concurrently": "^9.1.2"
   }
 }
