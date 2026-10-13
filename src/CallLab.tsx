@@ -13,7 +13,6 @@ export default function CallLab() {
   const [connected, setConnected] = useState(false)
   const [muted, setMuted] = useState(false)
   const [messages, setMessages] = useState<{ who: string; text: string }[]>([])
-  const [speechText, setSpeechText] = useState('')
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
   const socketRef = useRef<Socket | null>(null)
@@ -21,11 +20,13 @@ export default function CallLab() {
   const localRef = useRef<MediaStream | null>(null)
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null)
   const recognitionRef = useRef<any>(null)
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([])
 
   useEffect(() => () => { cleanup() }, [])
   const cleanup = () => {
     recognitionRef.current?.stop?.(); recognitionRef.current = null
     pcRef.current?.close(); pcRef.current = null
+    pendingCandidatesRef.current = []
     localRef.current?.getTracks().forEach(t => t.stop()); localRef.current = null
     socketRef.current?.disconnect(); socketRef.current = null
     setConnected(false); setMuted(false); setBusy(false)
@@ -43,10 +44,27 @@ export default function CallLab() {
       pc.onconnectionstatechange = () => { if (pc.connectionState === 'connected') { setConnected(true); setStatus('Live audio connected') } if (['failed','disconnected','closed'].includes(pc.connectionState)) { setConnected(false); setStatus(`Call ${pc.connectionState}`) } }
       socket.on('connect', () => { socket.emit('join-room', { room, name }); setStatus('Joined room; waiting for another person…') })
       socket.on('peer-joined', async () => { if (!pcRef.current) return; const offer = await pcRef.current.createOffer(); await pcRef.current.setLocalDescription(offer); socket.emit('signal', { room, data: { description: pcRef.current.localDescription } }); setStatus('Calling peer…') })
-      socket.on('signal', async ({ data }: any) => { const current = pcRef.current; if (!current) return; if (data.description) { await current.setRemoteDescription(data.description); if (data.description.type === 'offer') { const answer = await current.createAnswer(); await current.setLocalDescription(answer); socket.emit('signal', { room, data: { description: current.localDescription } }) } } else if (data.candidate) { try { await current.addIceCandidate(data.candidate) } catch (e) { console.warn('ICE candidate ignored', e) } } })
+      socket.on('signal', async ({ data }: any) => {
+        const current = pcRef.current
+        if (!current || !data) return
+        try {
+          if (data.description) {
+            await current.setRemoteDescription(data.description)
+            for (const candidate of pendingCandidatesRef.current.splice(0)) await current.addIceCandidate(candidate)
+            if (data.description.type === 'offer') {
+              const answer = await current.createAnswer()
+              await current.setLocalDescription(answer)
+              socket.emit('signal', { room, data: { description: current.localDescription } })
+            }
+          } else if (data.candidate) {
+            if (current.remoteDescription) await current.addIceCandidate(data.candidate)
+            else pendingCandidatesRef.current.push(data.candidate)
+          }
+        } catch (e) { console.warn('WebRTC signaling error:', e); setStatus('Could not negotiate audio connection. Try leaving and rejoining the room.') }
+      })
       socket.on('peer-left', () => setStatus('The other participant left the room'))
-      socket.on('room-full', () => setStatus('This room already has two participants. Choose another room.'))
-      socket.on('connect_error', () => setStatus('Could not reach signaling server. Start the backend first.'))
+      socket.on('room-full', () => { cleanup(); setStatus('This room already has two participants. Choose another room.') })
+      socket.on('connect_error', () => { cleanup(); setStatus('Could not reach signaling server. Start the backend first, then rejoin.') })
       setBusy(false)
     } catch (e: any) { setBusy(false); setStatus(e?.name === 'NotAllowedError' ? 'Microphone permission was denied.' : `Could not start call: ${e?.message || 'unknown error'}`); cleanup() }
   }
@@ -61,7 +79,7 @@ export default function CallLab() {
     const recognition = new SpeechRecognition(); recognition.lang = 'en-US'; recognition.interimResults = false; recognition.continuous = false; recognitionRef.current = recognition
     recognition.onstart = () => setStatus('Listening… speak now')
     recognition.onerror = (event: any) => setStatus(`Speech recognition error: ${event.error}`)
-    recognition.onresult = async (event: any) => { const text = event.results[0][0].transcript; setSpeechText(text); setMessages(prev => [...prev, { who: 'You', text }]); setBusy(true); setStatus('Getting a live AI response…'); try { const response = await fetch(`${serverUrl}/api/ai/reply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, history: messages.slice(-8) }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'AI endpoint unavailable'); const answer = data.reply as string; setMessages(prev => [...prev, { who: 'AI assistant', text: answer }]); const utterance = new SpeechSynthesisUtterance(answer); utterance.onend = () => setStatus('Ready — start listening for your next turn.'); speechSynthesis.cancel(); speechSynthesis.speak(utterance); setStatus('Speaking AI response…') } catch (e: any) { setStatus(e.message || 'AI response failed. Check backend and OPENROUTER_API_KEY.'); setMessages(prev => [...prev, { who: 'System', text: 'AI response unavailable. Configure OPENROUTER_API_KEY in the backend .env file.' }]) } finally { setBusy(false) } }
+    recognition.onresult = async (event: any) => { const text = event.results[0][0].transcript; setMessages(prev => [...prev, { who: 'You', text }]); setBusy(true); setStatus('Getting a live AI response…'); try { const response = await fetch(`${serverUrl}/api/ai/reply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, history: messages.slice(-8) }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'AI endpoint unavailable'); const answer = data.reply as string; setMessages(prev => [...prev, { who: 'AI assistant', text: answer }]); const utterance = new SpeechSynthesisUtterance(answer); utterance.onend = () => setStatus('Ready — start listening for your next turn.'); speechSynthesis.cancel(); speechSynthesis.speak(utterance); setStatus('Speaking AI response…') } catch (e: any) { setStatus(e.message || 'AI response failed. Check backend and OPENROUTER_API_KEY.'); setMessages(prev => [...prev, { who: 'System', text: 'AI response unavailable. Configure OPENROUTER_API_KEY in the backend .env file.' }]) } finally { setBusy(false) } }
     recognition.start()
   }
   const leave = () => { cleanup(); setStatus('Call ended'); setMessages(prev => prev.length ? [...prev, { who: 'System', text: 'Session ended.' }] : prev) }

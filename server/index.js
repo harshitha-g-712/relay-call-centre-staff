@@ -5,15 +5,17 @@ import http from 'node:http'
 import { Server } from 'socket.io'
 
 const app = express()
-app.use(cors({ origin: process.env.CLIENT_ORIGIN?.split(',') || true }))
+const allowedOrigins = process.env.CLIENT_ORIGIN?.split(',').map(origin => origin.trim()).filter(Boolean)
+const corsOptions = { origin: allowedOrigins?.length ? allowedOrigins : true }
+app.use(cors(corsOptions))
 app.use(express.json({ limit: '1mb' }))
 const server = http.createServer(app)
-const io = new Server(server, { cors: { origin: process.env.CLIENT_ORIGIN?.split(',') || true, methods: ['GET', 'POST'] } })
+const io = new Server(server, { cors: { ...corsOptions, methods: ['GET', 'POST'] } })
 const PORT = Number(process.env.PORT || 8787)
 
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'relay-calling-backend' }))
 app.post('/api/ai/reply', async (req, res) => {
-  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim().slice(0, 4000) : ''
   if (!text) return res.status(400).json({ error: 'Message text is required.' })
   if (!process.env.OPENROUTER_API_KEY) return res.status(503).json({ error: 'OPENROUTER_API_KEY is not configured in the backend .env file.' })
   try {
